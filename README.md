@@ -1,4 +1,4 @@
-## Keycloack plugin: Mapper api
+## Keycloack mapper plugin: Implements native AWS methods for script
 
 _Adds new script-based mapper functionality with native functions for aws lambda_
 
