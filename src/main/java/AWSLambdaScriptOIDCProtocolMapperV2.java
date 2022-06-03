@@ -1,10 +1,3 @@
-import com.amazonaws.auth.AWSCredentials;
-import com.amazonaws.auth.AWSStaticCredentialsProvider;
-import com.amazonaws.auth.BasicAWSCredentials;
-import com.amazonaws.regions.Regions;
-import com.amazonaws.services.lambda.AWSLambda;
-import com.amazonaws.services.lambda.AWSLambdaClientBuilder;
-import com.amazonaws.services.lambda.model.InvokeRequest;
 import org.jboss.logging.Logger;
 import org.keycloak.common.Profile;
 import org.keycloak.models.ClientSessionContext;
@@ -27,12 +20,19 @@ import org.keycloak.scripting.EvaluatableScriptAdapter;
 import org.keycloak.scripting.ScriptCompilationException;
 import org.keycloak.scripting.ScriptingProvider;
 
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.services.lambda.LambdaClient;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.lambda.model.InvokeRequest;
+
 import java.util.List;
 
-public class AWSLambdaScriptOIDCProtocolMapper extends AbstractOIDCProtocolMapper implements OIDCAccessTokenMapper, OIDCIDTokenMapper, UserInfoTokenMapper,
+public class AWSLambdaScriptOIDCProtocolMapperV2 extends AbstractOIDCProtocolMapper implements OIDCAccessTokenMapper, OIDCIDTokenMapper, UserInfoTokenMapper,
         OIDCAccessTokenResponseMapper, EnvironmentDependentProviderFactory {
 
-    public static final String PROVIDER_ID = "oidc-script-based-protocol-mapper-aws-lambda";
+    public static final String PROVIDER_ID = "oidc-script-based-protocol-mapper-aws-lambda-v2";
 
     private static final Logger LOGGER = Logger.getLogger(ScriptBasedOIDCProtocolMapper.class);
 
@@ -45,6 +45,10 @@ public class AWSLambdaScriptOIDCProtocolMapper extends AbstractOIDCProtocolMappe
     public static final String REGION = "aws.region";
 
     private static final List<ProviderConfigProperty> configProperties;
+
+    private static Region region = null;
+
+    private static LambdaClient awsLambda = null;
 
     static {
 
@@ -63,6 +67,7 @@ public class AWSLambdaScriptOIDCProtocolMapper extends AbstractOIDCProtocolMappe
                 .name(REGION)
                 .type(ProviderConfigProperty.STRING_TYPE)
                 .label("AWS Region")
+                .defaultValue(region.toString())
                 .add()
                 .property()
                 .name(SCRIPT)
@@ -114,7 +119,7 @@ public class AWSLambdaScriptOIDCProtocolMapper extends AbstractOIDCProtocolMappe
 
     @Override
     public String getDisplayType() {
-        return "Script Mapper with AWS lambda";
+        return "Script Mapper with AWS lambda v2";
     }
 
     @Override
@@ -154,17 +159,6 @@ public class AWSLambdaScriptOIDCProtocolMapper extends AbstractOIDCProtocolMappe
         UserModel user = userSession.getUser();
         String scriptSource = getScriptCode(mappingModel);
 
-        String accessKey = mappingModel.getConfig().get(ACCESS_KEY);
-        String privateKey = mappingModel.getConfig().get(SECRET_KEY);
-        String region = mappingModel.getConfig().get(REGION);
-
-        AWSCredentials credentials = new BasicAWSCredentials(accessKey, privateKey);
-        Regions awsRegion = Regions.fromName(region);
-
-        AWSLambda lambda = AWSLambdaClientBuilder.standard()
-                .withRegion(awsRegion)
-                .withCredentials(new AWSStaticCredentialsProvider(credentials)).build();
-
         RealmModel realm = userSession.getRealm();
 
         ScriptingProvider scripting = keycloakSession.getProvider(ScriptingProvider.class);
@@ -172,11 +166,32 @@ public class AWSLambdaScriptOIDCProtocolMapper extends AbstractOIDCProtocolMappe
 
         EvaluatableScriptAdapter script = scripting.prepareEvaluatableScript(scriptModel);
 
+        String inputedAccessKey = mappingModel.getConfig().get(ACCESS_KEY);
+        String inputedPrivateKey = mappingModel.getConfig().get(SECRET_KEY);
+        String inputedRegion = mappingModel.getConfig().get(REGION);
+
+        if (region == null) {
+            if (!inputedRegion.isEmpty()) {
+                region = Region.of(inputedRegion);
+            } else {
+                region = Region.of(System.getenv("AWS_REGION"));
+            }
+        }
+
+        if (awsLambda == null) {
+            if (inputedAccessKey.isEmpty() && inputedPrivateKey.isEmpty()) {
+                awsLambda = LambdaClient.builder().region(region).credentialsProvider(ProfileCredentialsProvider.create()).build();
+            } else {
+                AwsBasicCredentials awsCreds = AwsBasicCredentials.create(inputedAccessKey, inputedPrivateKey);
+                awsLambda = LambdaClient.builder().region(region).credentialsProvider(StaticCredentialsProvider.create(awsCreds)).build();
+            }
+        }
+
         Object claimValue;
         try {
             claimValue = script.eval((bindings) -> {
-                bindings.put("invokeRequest", new InvokeRequest());
-                bindings.put("lambda", lambda);
+                bindings.put("invokeRequest", InvokeRequest.builder());
+                bindings.put("lambda", awsLambda);
                 bindings.put("user", user);
                 bindings.put("realm", realm);
                 if (tokenBinding instanceof IDToken) {
@@ -199,12 +214,16 @@ public class AWSLambdaScriptOIDCProtocolMapper extends AbstractOIDCProtocolMappe
     public void validateConfig(KeycloakSession session, RealmModel realm, ProtocolMapperContainerModel client, ProtocolMapperModel mapperModel) throws ProtocolMapperConfigException {
 
         String scriptCode = getScriptCode(mapperModel);
-        String accessKey = mapperModel.getConfig().get(ACCESS_KEY);
-        String privateKey = mapperModel.getConfig().get(SECRET_KEY);
-        String region = mapperModel.getConfig().get(REGION);
+        String inputedAccessKey = mapperModel.getConfig().get(ACCESS_KEY);
+        String inputedPrivateKey = mapperModel.getConfig().get(SECRET_KEY);
+        String inputedRegion = mapperModel.getConfig().get(REGION);
 
-        if (scriptCode == null || accessKey == null || privateKey == null || region == null) {
-            return;
+        if (inputedRegion.isEmpty() && System.getenv("AWS_REGION").isEmpty()) {
+            throw new ProtocolMapperConfigException("error", "{0}", "Region is required out of aws");
+        }
+
+        if ((inputedAccessKey.isEmpty() || inputedPrivateKey.isEmpty()) && System.getenv("AWS_ACCESS_KEY_ID").isEmpty() && System.getenv("AWS_SECRET_ACCESS_KEY").isEmpty()) {
+            throw new ProtocolMapperConfigException("error", "{0}", "Credentials are required out of aws");
         }
 
         ScriptingProvider scripting = session.getProvider(ScriptingProvider.class);
