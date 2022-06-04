@@ -12,29 +12,25 @@ _Adds new script-based mapper functionality with native functions for aws lambda
 
 ```javascript
 /**
- * Available variables:
+ * Available variables: 
  * user - the current user
  * realm - the current realm
  * token - the current token
  * userSession - the current userSession
  * keycloakSession - the current keycloakSession
- * invokeRequest - the InvokeRequest instance from aws
- * lambda - the AWSLambdaClientBuilder instance from aws
+ * lambda - the lambda instance from aws
  */
 
 var email = user.getFirstAttribute("email");
+
 var inputJSON = JSON.stringify({ email: email });
 
-var lmbRequest = invokeRequest
-  .withFunctionName("lambdas-fnc")
-  .withPayload(inputJSON);
-var result = lambda.invoke(lmbRequest);
+var result = lambda.invoke("function-name", inputJSON);
 
-var resultObject = JSON.parse(
-  new java.lang.String(result.getPayload().array(), "UTF-8")
-);
+var resultObject = JSON.parse(result);
 
 exports = resultObject;
+
 ```
 
 ## Reference
