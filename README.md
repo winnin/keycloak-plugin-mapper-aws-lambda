@@ -6,7 +6,7 @@ _Adds new script-based mapper functionality with native functions for aws lambda
 
 ## Instalation
 
-`docker cp keycloak-mapper-aws-lambda-script-1.0-SNAPSHOT.jar keycloack:/opt/jboss/keycloak/standalone/deployments/`
+`docker cp keycloak-mapper-aws-lambda-script-2.0.jar keycloack:/opt/jboss/keycloak/standalone/deployments/`
 
 ## Code example
 
